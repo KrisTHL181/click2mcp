@@ -1,0 +1,71 @@
+[build-system]
+# Cap setuptools-scm below 10: its vcs-versioning probe of <root>/.config can
+# abort a build when the source tree is copied into a temp directory, while the
+# 9.x line still reads the version stored in the sdist.
+requires = ["setuptools>=77", "wheel", "setuptools-scm>=8.0,<10"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "click2mcp"
+dynamic = ["version"]
+description = "Turn any Click CLI into a typed MCP server — one tool per leaf command."
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.10"
+keywords = ["click", "mcp", "mcp-server", "cli", "ai-agent"]
+authors = [
+    { name = "KrisTHL181", email = "KrisTHL181@outlook.com" },
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+]
+dependencies = [
+    "click>=8.1",
+    "mcp>=2.0",
+]
+
+[project.optional-dependencies]
+test = [
+    "pytest>=8",
+]
+
+[project.urls]
+Homepage = "https://github.com/KrisTHL181/click2mcp"
+Repository = "https://github.com/KrisTHL181/click2mcp"
+Issues = "https://github.com/KrisTHL181/click2mcp/issues"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools_scm]
+fallback_version = "0.1.0"
+# PyPI forbids local versions (+gHASH.dDATE); strip the local segment. Tagged
+# releases are unaffected.
+local_scheme = "no-local-version"
+
+[tool.ruff]
+line-length = 120
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "W", "F", "I", "UP"]
+ignore = ["E501"]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+skip-magic-trailing-comma = false
+line-ending = "auto"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

@@ -1,0 +1,37 @@
+name: publish
+
+# PyPI trusted publishing must be configured for this repository and this
+# workflow file before the first run: PyPI project `click2mcp` -> GitHub
+# publisher -> KrisTHL181/click2mcp -> publish.yml. Publish order for the
+# toolkits that depend on click2mcp: click2mcp first, then the toolkits.
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to publish (e.g. 0.1.0); optional, overrides the tag-derived version"
+        required: false
+
+permissions:
+  id-token: write   # trusted publishing (OIDC)
+  contents: read
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0   # setuptools-scm needs to see tags to derive the version
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.13"
+      - run: pip install build
+      - name: Use the manual version when one was given
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.version != '' }}
+        run: echo "SETUPTOOLS_SCM_PRETEND_VERSION=${{ inputs.version }}" >> "$GITHUB_ENV"
+      - run: python -m build
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
