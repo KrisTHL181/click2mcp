@@ -36,6 +36,8 @@ import click
 from mcp.server.mcpserver.exceptions import ToolError
 from mcp.server.mcpserver.tools import Tool
 
+from click2mcp._output import compact_json
+
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterator
 
@@ -573,8 +575,8 @@ def _make_runner(
         # A successful command often warns on stderr; only surface it when stdout is
         # empty, so JSON output stays parseable.
         if not proc.stdout.strip() and proc.stderr.strip():
-            return proc.stderr.strip()
-        return proc.stdout
+            return compact_json(proc.stderr.strip())
+        return compact_json(proc.stdout)
 
     return run
 

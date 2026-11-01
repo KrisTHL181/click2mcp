@@ -48,6 +48,7 @@ from mcp.server import MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
 from mcp.server.mcpserver.tools import Tool
 
+from click2mcp._output import compact_json
 from click2mcp.generator import generate_tools
 
 if TYPE_CHECKING:
@@ -331,9 +332,9 @@ class ClickMCP:
             # Successful commands often warn on stderr; only surface it when stdout is
             # empty, so that JSON output stays clean and parseable.
             if not proc.stdout.strip() and proc.stderr.strip():
-                return proc.stderr.strip()
+                return compact_json(proc.stderr.strip())
 
-            return proc.stdout
+            return compact_json(proc.stdout)
 
         run_fn.__name__ = f"{app}_run"
         return Tool.from_function(run_fn, name=f"{app}_run", description=self.run_description)
