@@ -145,6 +145,34 @@ class ToolSpec:
     params: tuple[ParamSpec, ...]
 
 
+def resolve_tool_prefix(app: str, tool_prefix: str | None) -> str:
+    """Resolve and normalize the prefix put in front of every generated tool name.
+
+    ``None`` keeps the historical ``f"{app}_"``, so clients that do not namespace
+    tools themselves never lose the CLI's name. An empty string means no prefix at
+    all, and any other value is used verbatim after normalization. Spaces and
+    hyphens become ``_``, and a trailing ``_`` is appended unless the result is
+    empty or already ends with one.
+
+    :param app: the CLI executable name, used when ``tool_prefix`` is ``None``.
+    :param tool_prefix: the requested prefix; ``None`` for ``f"{app}_"``.
+    :returns: the normalized prefix — either empty or a valid identifier fragment
+        ending in ``_``.
+    :raises ValueError: if the normalized prefix is non-empty and its stem is not a
+        valid Python identifier. Tool names are also the generated functions'
+        ``__name__``, so an invalid prefix would produce invalid names.
+    """
+    requested = f"{app}_" if tool_prefix is None else tool_prefix
+    normalized = requested.replace(" ", "_").replace("-", "_")
+    if normalized and not normalized.endswith("_"):
+        normalized += "_"
+    if normalized and not normalized.rstrip("_").isidentifier():
+        raise ValueError(
+            f"tool_prefix {requested!r} (normalized to {normalized!r}) is not a valid Python identifier"
+        )
+    return normalized
+
+
 def generate_tools(
     *,
     cli: click.Group | None,
@@ -153,12 +181,13 @@ def generate_tools(
     exclude: frozenset[tuple[str, ...]] = frozenset(),
     include: tuple[tuple[str, ...], ...] | None = None,
     inherit_group_options: bool = True,
+    tool_prefix: str | None = None,
 ) -> list[Tool]:
     """Build one typed MCP tool for every leaf command of ``cli``.
 
     :param cli: the root command group, or ``None`` when it could not be loaded.
     :param invoke: runs the CLI and returns the completed process; ``server._runner``.
-    :param app: the CLI executable name, also the tool-name prefix.
+    :param app: the CLI executable name.
     :param exclude: command paths to leave out — TUI and streaming commands, which
         can never complete when driven over MCP.
     :param include: command path prefixes to expose, e.g.
@@ -169,12 +198,17 @@ def generate_tools(
         the tools it was meant to select, not the server.
     :param inherit_group_options: whether options declared on ancestor groups are
         added to every leaf tool below them.
+    :param tool_prefix: prefix for the generated tool names; ``None`` for
+        ``f"{app}_"``, ``""`` for none. Normalized once by
+        :func:`resolve_tool_prefix`.
     :returns: the tools, in command-tree order. Empty if ``cli`` is ``None``, so the
         server still starts with its shell tools. A leaf that cannot be exposed costs
         exactly that one tool: the server calls this at construction time, so letting
         a single bad command raise here would take the whole server down instead of
         one command.
+    :raises ValueError: if ``tool_prefix`` does not normalize to a valid identifier.
     """
+    resolved = resolve_tool_prefix(app, tool_prefix)
     if cli is None:
         return []
 
@@ -186,7 +220,7 @@ def generate_tools(
         if include is not None:
             matched.update(prefix for prefix in include if path[: len(prefix)] == prefix)
         try:
-            spec = _spec_for(path, command, groups, app, inherit_group_options)
+            spec = _spec_for(path, command, groups, app, resolved, inherit_group_options)
             _claim_name(spec, claimed, app)
             tool = _build_tool(spec, invoke, app)
         except Exception as exc:
@@ -272,6 +306,7 @@ def _spec_for(
     command: click.Command,
     groups: tuple[click.Group, ...],
     app: str,
+    tool_prefix: str,
     inherit_group_options: bool,
 ) -> ToolSpec:
     """Describe one leaf command as a :class:`ToolSpec`.
@@ -279,7 +314,8 @@ def _spec_for(
     :param path: the command's path in the tree.
     :param command: the leaf command itself.
     :param groups: the ancestor groups, root first.
-    :param app: the CLI executable name and tool-name prefix.
+    :param app: the CLI executable name.
+    :param tool_prefix: the resolved prefix for the generated tool name.
     :param inherit_group_options: whether to add the ancestor groups' options.
     :returns: the frozen spec.
     :raises RuntimeError: if two parameters of the command would need the same
@@ -327,7 +363,7 @@ def _spec_for(
 
     return ToolSpec(
         path=path,
-        name=_tool_name(app, path),
+        name=_tool_name(tool_prefix, path, app),
         description=_description_for(app, path, command),
         params=tuple(params),
     )
@@ -445,14 +481,21 @@ def _is_unset(value: Any) -> bool:
     return value is _UNSET
 
 
-def _tool_name(app: str, path: tuple[str, ...]) -> str:
+def _tool_name(tool_prefix: str, path: tuple[str, ...], app: str) -> str:
     """Derive the exposed tool name for a command path.
 
-    :param app: the CLI executable name and tool-name prefix.
+    :param tool_prefix: the resolved prefix, empty or ending in ``_``.
     :param path: the command path, hyphens intact.
+    :param app: the CLI executable name, used when the path is empty and there is
+        no prefix to fall back on.
     :returns: e.g. ``"mycli_config_app_version_set"`` — a valid Python identifier.
     """
-    return "_".join((app, *path)).replace("-", "_")
+    body = "_".join(path).replace("-", "_")
+    if not body:
+        # Defensive: the walk never yields an empty path, but the name must still
+        # be a usable identifier if it ever did.
+        return tool_prefix.rstrip("_") or app
+    return f"{tool_prefix}{body}"
 
 
 def _description_for(app: str, path: tuple[str, ...], command: click.Command) -> str:

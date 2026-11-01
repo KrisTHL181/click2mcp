@@ -281,3 +281,31 @@ def test_failed_cli_loader_serves_escape_hatches(caplog: pytest.LogCaptureFixtur
 
     assert set(_tools(bridge.server)) == {"mycli_help", "mycli_run"}
     assert any("could not load the CLI" in record.message for record in caplog.records)
+
+
+def test_empty_tool_prefix_keeps_escape_hatches_prefixed(cli: click.Group) -> None:
+    """``tool_prefix=""`` drops the prefix from typed tools but not from help/run."""
+    bridge = ClickMCP(app="mycli", cli=cli, invoke=Recorder(), tool_prefix="")
+    assert set(_tools(bridge.server)) == {"admin_secret", "greet", "mycli_help", "mycli_run"}
+
+
+def test_instructions_use_the_resolved_prefix(cli: click.Group) -> None:
+    """The default instructions name tools the server actually exposes."""
+    unprefixed = ClickMCP(app="mycli", cli=cli, invoke=Recorder(), tool_prefix="")
+    assert "`browse_following_users`" in unprefixed.server.instructions
+    assert "mycli_browse_following_users" not in unprefixed.server.instructions
+    # The escape hatches keep their app prefix even with no typed-tool prefix.
+    assert "`mycli_help(path)`" in unprefixed.server.instructions
+    assert "`mycli_run(args)`" in unprefixed.server.instructions
+
+    default = ClickMCP(app="mycli", cli=cli, invoke=Recorder())
+    assert "`mycli_browse_following_users`" in default.server.instructions
+
+    custom = ClickMCP(app="mycli", cli=cli, invoke=Recorder(), tool_prefix="auto")
+    assert "`auto_browse_following_users`" in custom.server.instructions
+
+
+def test_invalid_tool_prefix_raises_from_constructor(cli: click.Group) -> None:
+    """A bad prefix is a construction-time ``ValueError``, not a silent fallback."""
+    with pytest.raises(ValueError, match="2fa"):
+        ClickMCP(app="mycli", cli=cli, invoke=Recorder(), tool_prefix="2fa")

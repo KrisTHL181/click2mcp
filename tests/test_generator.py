@@ -361,3 +361,57 @@ def test_prompted_options_are_required() -> None:
     tool.fn_metadata.validate_arguments({"phone": "123", "password": "secret"})
     tool.fn(phone="123", password="secret")
     assert recorder.calls[-1] == ["login", "--phone=123", "--password=secret"]
+
+
+def test_tool_prefix_defaults_to_app(rich_cli: click.Group) -> None:
+    """``tool_prefix=None`` keeps the historical ``{app}_`` name."""
+    tools = generate_tools(cli=rich_cli, invoke=Recorder(), app="mycli", tool_prefix=None)
+    assert [tool.name for tool in tools] == ["mycli_all_types"]
+
+
+def test_empty_tool_prefix_drops_app(rich_cli: click.Group) -> None:
+    """``tool_prefix=""`` names the tool after the command path alone."""
+    tools = generate_tools(cli=rich_cli, invoke=Recorder(), app="mycli", tool_prefix="")
+    assert [tool.name for tool in tools] == ["all_types"]
+
+
+def test_custom_tool_prefix_is_normalized(rich_cli: click.Group) -> None:
+    """A custom prefix gets a trailing ``_``; spaces and hyphens become ``_``."""
+    recorder = Recorder()
+    assert [tool.name for tool in generate_tools(cli=rich_cli, invoke=recorder, app="mycli", tool_prefix="auto")] == [
+        "auto_all_types"
+    ]
+    assert [
+        tool.name for tool in generate_tools(cli=rich_cli, invoke=recorder, app="mycli", tool_prefix="au-to")
+    ] == ["au_to_all_types"]
+    assert [
+        tool.name for tool in generate_tools(cli=rich_cli, invoke=recorder, app="mycli", tool_prefix="my cli")
+    ] == ["my_cli_all_types"]
+
+
+def test_invalid_tool_prefix_raises(rich_cli: click.Group) -> None:
+    """A prefix that cannot be part of an identifier is refused, naming the value."""
+    with pytest.raises(ValueError, match="2fa"):
+        generate_tools(cli=rich_cli, invoke=Recorder(), app="mycli", tool_prefix="2fa")
+
+
+def test_empty_prefix_collision_skips_only_that_command(caplog: pytest.LogCaptureFixture) -> None:
+    """Two paths normalizing to one name still collide when the prefix is empty."""
+
+    @click.group()
+    def cli() -> None:
+        """Root."""
+
+    @cli.command(name="a-b")
+    def dash() -> None:
+        """Dash."""
+
+    @cli.command(name="a_b")
+    def underscore() -> None:
+        """Underscore."""
+
+    with caplog.at_level(logging.WARNING, logger="click2mcp.generator"):
+        tools = generate_tools(cli=cli, invoke=Recorder(), app="mycli", tool_prefix="")
+
+    assert [tool.name for tool in tools] == ["a_b"]
+    assert any("already used by" in record.message for record in caplog.records)

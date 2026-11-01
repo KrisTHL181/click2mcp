@@ -58,7 +58,7 @@ hatches. `module="mycli.main"` is the fallback launcher used when no installed
 
 | Parameter | Default | Meaning |
 | --- | --- | --- |
-| `app` | required | CLI executable name, tool-name prefix (`{app}_{path}`), MCP server name, and `{app}-mcp` program name. |
+| `app` | required | CLI executable name, default tool-name prefix (see `tool_prefix`), MCP server name, and `{app}-mcp` program name. |
 | `cli` | required | Root `click.Group`, zero-arg callable returning one, or `None`. |
 | `module` | `None` | Module passed to `python -m` when no executable is found. Required if `app` is not installed and no `launcher` is given. |
 | `instructions` | generic template | MCP server instructions; used verbatim when supplied. |
@@ -68,6 +68,7 @@ hatches. `module="mycli.main"` is the fallback launcher used when no installed
 | `help_description` | generic | Description override for `{app}_help`. |
 | `run_description` | generic | Description override for `{app}_run`. |
 | `inherit_group_options` | `True` | Expose options declared on ancestor groups on every leaf tool below them. |
+| `tool_prefix` | `None` | Prefix for generated typed tool names: `None` keeps `{app}_`, `""` drops it, any other value is normalized (`-`/space to `_`, trailing `_` added). Must form a Python identifier. `{app}_help`/`{app}_run` keep their prefix regardless. |
 | `launcher` | `None` | Explicit argv prefix used to run the CLI. |
 | `env` | `None` | Extra child environment variables, merged over the defaults. |
 | `invoke` | `None` | Custom `(tokens) -> CompletedProcess[str]` runner; shared by typed tools and escape hatches. |
@@ -85,6 +86,16 @@ command path turn into `_`, so `mycli browse following users` is
 `mycli_browse_following_users`, and the description ends with the exact CLI
 spelling. `--groups` restricts the typed tools to the named subtrees, written with
 dots or spaces. An empty entry is rejected.
+
+**Tool names and client namespacing.** The `{app}_` prefix is on by default because
+many MCP clients show a flat list of tool names with no other context. Some clients
+namespace tools themselves — Claude Code registers each one as
+`mcp__<server>__<tool>` — so the prefix duplicates the server name on screen. Set
+`tool_prefix=""` to name the typed tools after the command path alone
+(`browse_following_users`); any other value replaces the prefix, normalized like a
+command path. This applies to the generated typed tools only: `{app}_help` and
+`{app}_run` always keep the `{app}_` prefix, because `help` and `run` are generic
+verbs that would collide with real subcommands of the same name.
 
 **Escape hatches and inherited options.** `{app}_help(path)` runs `--help`, and
 `{app}_run(args)` runs an arbitrary command line. Set `escape_hatches=False` to omit

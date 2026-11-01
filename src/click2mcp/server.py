@@ -49,7 +49,7 @@ from mcp.server.mcpserver.exceptions import ToolError
 from mcp.server.mcpserver.tools import Tool
 
 from click2mcp._output import compact_json
-from click2mcp.generator import generate_tools
+from click2mcp.generator import generate_tools, resolve_tool_prefix
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Mapping, Sequence
@@ -59,9 +59,9 @@ logger = logging.getLogger(__name__)
 # ── instructions ───────────────────────────────────────────────────────────
 
 _INSTRUCTIONS_TEMPLATE = """\
-Wraps the `{app}` CLI as one typed tool per leaf command: `{app}_<path>`, with
+Wraps the `{app}` CLI as one typed tool per leaf command: `{prefix}<path>`, with
 `_` for every space and hyphen, so `{app} browse following users` is
-`{app}_browse_following_users`. Each typed tool names its own arguments, types,
+`{prefix}browse_following_users`. Each typed tool names its own arguments, types,
 defaults, and allowed values, and its description ends with the exact command line
 it maps to.
 
@@ -91,7 +91,7 @@ before they run when they are listed in `exclude`; do not retry them.
 class ClickMCP:
     """Expose a Click CLI as a typed MCP server.
 
-    :param app: the CLI executable name; also the tool-name prefix
+    :param app: the CLI executable name; also the default tool-name prefix
         (``{app}_{path}``), the MCP server name, and the ``--groups`` parser's
         ``prog`` prefix (``{app}-mcp``).
     :param cli: the root :class:`click.Group`, a zero-argument callable returning
@@ -107,6 +107,12 @@ class ClickMCP:
     :param run_description: description for ``{app}_run``; generic when ``None``.
     :param inherit_group_options: whether options declared on ancestor groups are
         exposed on each leaf tool and emitted before the sub-command they lead to.
+    :param tool_prefix: prefix for the generated typed tool names. ``None`` keeps
+        ``f"{app}_"``; ``""`` drops the prefix entirely; any other value is
+        normalized by :func:`resolve_tool_prefix`. The ``{app}_help`` and
+        ``{app}_run`` escape hatches always keep the ``{app}_`` prefix: ``help``
+        and ``run`` are generic verbs that would collide with real subcommands of
+        the same name.
     :param launcher: explicit argv prefix used to run the CLI; when ``None``, the
         sibling console script, then ``$PATH``, then ``python -m module`` is tried.
     :param env: extra environment variables for the child, merged over the
@@ -115,6 +121,8 @@ class ClickMCP:
         When given, the escape hatches and generated tools both use it.
     :raises RuntimeError: at construction when no launcher can be resolved and no
         custom ``invoke`` was supplied.
+    :raises ValueError: at construction when ``tool_prefix`` does not normalize to
+        a valid Python identifier.
     """
 
     def __init__(
@@ -130,11 +138,14 @@ class ClickMCP:
         help_description: str | None = None,
         run_description: str | None = None,
         inherit_group_options: bool = True,
+        tool_prefix: str | None = None,
         launcher: Sequence[str] | None = None,
         env: Mapping[str, str] | None = None,
         invoke: Callable[[list[str]], subprocess.CompletedProcess[str]] | None = None,
     ) -> None:
         self.app = app
+        # Resolved once here, not per tool: the prefix is fixed for the server's life.
+        self.tool_prefix = resolve_tool_prefix(app, tool_prefix)
         self.module = module
         self.exclude = frozenset(exclude)
         self.include = include
@@ -171,10 +182,11 @@ class ClickMCP:
     def _default_instructions(self) -> str:
         """Build the generic server instructions.
 
-        :returns: the template for the typed tools, plus the escape-hatch section
-            only when those tools are enabled.
+        :returns: the template for the typed tools, using the resolved prefix so
+            the example names are the ones the server actually exposes, plus the
+            escape-hatch section only when those tools are enabled.
         """
-        text = _INSTRUCTIONS_TEMPLATE.format(app=self.app)
+        text = _INSTRUCTIONS_TEMPLATE.format(app=self.app, prefix=self.tool_prefix)
         if self.escape_hatches:
             text += _ESCAPE_HATCH_INSTRUCTIONS.format(app=self.app)
             text += _NO_TIMEOUT_INSTRUCTIONS.format(app=self.app)
@@ -363,6 +375,7 @@ class ClickMCP:
             exclude=self.exclude,
             include=effective,
             inherit_group_options=self.inherit_group_options,
+            tool_prefix=self.tool_prefix,
         )
         if self.escape_hatches:
             tools.append(self._help_tool())
