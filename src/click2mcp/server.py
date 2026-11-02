@@ -29,6 +29,15 @@ typed tools to the command subtrees named::
 
 The two escape hatches are left unfiltered on purpose — they exist to reach what the
 typed tools do not cover, and each costs a single tool's worth of schema.
+
+The server speaks MCP over stdio by default. Streamable HTTP is available for
+clients that connect over the network::
+
+    {app}-mcp --transport streamable-http --host 127.0.0.1 --port 8000
+
+Binding a non-loopback address requires ``--allow-host``: the SDK enables
+Host-header validation only for loopback binds, so an open bind would otherwise
+accept any Host header. See :func:`_transport_security`.
 """
 
 from __future__ import annotations
@@ -47,6 +56,7 @@ import click
 from mcp.server import MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
 from mcp.server.mcpserver.tools import Tool
+from mcp.server.transport_security import TransportSecuritySettings
 
 from click2mcp._output import compact_json
 from click2mcp.generator import generate_tools, resolve_tool_prefix
@@ -55,6 +65,14 @@ if TYPE_CHECKING:
     from collections.abc import Callable, Mapping, Sequence
 
 logger = logging.getLogger(__name__)
+
+#: Transports this bridge can serve. ``sse`` exists in the SDK but is superseded by
+#: Streamable HTTP in the MCP spec, so it is not offered here.
+_TRANSPORTS = ("stdio", "streamable-http")
+
+#: Addresses for which the SDK applies its own Host/Origin allowlist. Any other bind
+#: needs explicit allowed hosts; see :func:`_transport_security`.
+_LOCAL_HOSTS = frozenset({"127.0.0.1", "localhost", "::1"})
 
 # ── instructions ───────────────────────────────────────────────────────────
 
@@ -113,6 +131,19 @@ class ClickMCP:
         ``{app}_run`` escape hatches always keep the ``{app}_`` prefix: ``help``
         and ``run`` are generic verbs that would collide with real subcommands of
         the same name.
+    :param transport: default MCP transport for :meth:`run`, either ``"stdio"`` or
+        ``"streamable-http"``; ``run``'s ``--transport`` overrides it.
+    :param host: default bind address for the Streamable HTTP transport.
+    :param port: default TCP port for the Streamable HTTP transport.
+    :param path: default URL path of the Streamable HTTP endpoint; a leading ``/``
+        is added when missing.
+    :param stateless: default for Streamable HTTP: serve each request without a
+        session instead of keeping one per client.
+    :param json_response: default for Streamable HTTP: reply with a plain JSON body
+        instead of an SSE stream.
+    :param allowed_hosts: Host header values accepted when serving Streamable HTTP;
+        required for a non-loopback ``host``. A bare name also accepts any port on
+        that name. ``run``'s ``--allow-host`` overrides it.
     :param launcher: explicit argv prefix used to run the CLI; when ``None``, the
         sibling console script, then ``$PATH``, then ``python -m module`` is tried.
     :param env: extra environment variables for the child, merged over the
@@ -122,7 +153,7 @@ class ClickMCP:
     :raises RuntimeError: at construction when no launcher can be resolved and no
         custom ``invoke`` was supplied.
     :raises ValueError: at construction when ``tool_prefix`` does not normalize to
-        a valid Python identifier.
+        a valid Python identifier, or ``transport`` is not a supported transport.
     """
 
     def __init__(
@@ -139,6 +170,13 @@ class ClickMCP:
         run_description: str | None = None,
         inherit_group_options: bool = True,
         tool_prefix: str | None = None,
+        transport: str = "stdio",
+        host: str = "127.0.0.1",
+        port: int = 8000,
+        path: str = "/mcp",
+        stateless: bool = False,
+        json_response: bool = False,
+        allowed_hosts: Sequence[str] | None = None,
         launcher: Sequence[str] | None = None,
         env: Mapping[str, str] | None = None,
         invoke: Callable[[list[str]], subprocess.CompletedProcess[str]] | None = None,
@@ -151,6 +189,15 @@ class ClickMCP:
         self.include = include
         self.escape_hatches = escape_hatches
         self.inherit_group_options = inherit_group_options
+        if transport not in _TRANSPORTS:
+            raise ValueError(f"transport must be one of {', '.join(_TRANSPORTS)}; got {transport!r}")
+        self.transport = transport
+        self.host = host
+        self.port = port
+        self.path = path if path.startswith("/") else f"/{path}"
+        self.stateless = stateless
+        self.json_response = json_response
+        self.allowed_hosts = tuple(allowed_hosts) if allowed_hosts is not None else None
         self._launcher = list(launcher) if launcher is not None else None
         self._env = dict(env or {})
 
@@ -383,14 +430,18 @@ class ClickMCP:
         return MCPServer(name=self.app, instructions=self.instructions, tools=tools)
 
     def run(self, argv: Sequence[str] | None = None) -> None:
-        """Serve MCP over stdio, optionally restricted to selected command groups.
+        """Serve MCP over stdio or Streamable HTTP.
+
+        Command-line options override the constructor's transport settings, so a
+        console script can bake in defaults and still let the user switch
+        transports at launch.
 
         :param argv: command-line arguments; ``sys.argv[1:]`` when ``None``.
         """
         unfiltered = " The escape hatches stay unfiltered." if self.escape_hatches else ""
         parser = argparse.ArgumentParser(
             prog=f"{self.app}-mcp",
-            description=f"Expose the {self.app} CLI to AI agents over MCP (stdio).",
+            description=f"Expose the {self.app} CLI to AI agents over MCP (stdio or Streamable HTTP).",
         )
         parser.add_argument(
             "--groups",
@@ -402,9 +453,79 @@ class ClickMCP:
                 f"Omit to expose every command.{unfiltered}"
             ),
         )
+        parser.add_argument(
+            "--transport",
+            choices=_TRANSPORTS,
+            default=self.transport,
+            help="MCP transport to serve (default: %(default)s).",
+        )
+        http = parser.add_argument_group(
+            "Streamable HTTP options",
+            "Used only when --transport streamable-http is selected.",
+        )
+        http.add_argument(
+            "--host",
+            metavar="ADDR",
+            default=self.host,
+            help="bind address (default: %(default)s); a non-loopback address also needs --allow-host.",
+        )
+        http.add_argument(
+            "--port",
+            metavar="PORT",
+            type=int,
+            default=self.port,
+            help="TCP port (default: %(default)s).",
+        )
+        http.add_argument(
+            "--path",
+            metavar="PATH",
+            default=self.path,
+            help="URL path of the MCP endpoint (default: %(default)s).",
+        )
+        http.add_argument(
+            "--stateless",
+            action=argparse.BooleanOptionalAction,
+            default=self.stateless,
+            help="serve each request without a session (default: %(default)s).",
+        )
+        http.add_argument(
+            "--json-response",
+            action=argparse.BooleanOptionalAction,
+            default=self.json_response,
+            help="reply with a plain JSON body instead of an SSE stream (default: %(default)s).",
+        )
+        http.add_argument(
+            "--allow-host",
+            metavar="HOST",
+            action="append",
+            default=None,
+            help=(
+                "Host header clients may send (repeatable); required for a non-loopback --host. "
+                "A bare name such as 'example.com' also accepts any port on that name."
+            ),
+        )
         args = parser.parse_args(argv)
         server = self.server if args.groups is None else self.build_server(args.groups)
-        server.run(transport="stdio")
+
+        if args.transport == "stdio":
+            server.run(transport="stdio")
+            return
+
+        allowed_hosts = tuple(args.allow_host) if args.allow_host is not None else self.allowed_hosts
+        try:
+            security = _transport_security(args.host, allowed_hosts)
+        except ValueError as exc:
+            parser.error(str(exc))
+        server.run(
+            transport="streamable-http",
+            host=args.host,
+            port=args.port,
+            # Starlette refuses a route that does not start with a slash.
+            streamable_http_path=args.path if args.path.startswith("/") else f"/{args.path}",
+            stateless_http=args.stateless,
+            json_response=args.json_response,
+            transport_security=security,
+        )
 
 
 def _group_prefixes(value: str) -> tuple[tuple[str, ...], ...]:
@@ -426,6 +547,46 @@ def _group_prefixes(value: str) -> tuple[tuple[str, ...], ...]:
             raise argparse.ArgumentTypeError(f"empty command path in {value!r}")
         prefixes.append(tokens)
     return tuple(prefixes)
+
+
+def _transport_security(host: str, allowed_hosts: Sequence[str] | None) -> TransportSecuritySettings | None:
+    """Build the Host-header allowlist for a Streamable HTTP bind.
+
+    The SDK enables DNS-rebinding protection on its own only when the bind address
+    is loopback, and leaves it off for anything else. An open bind with no
+    allowlist would accept every Host header, so that combination is refused
+    instead of served silently.
+
+    :param host: the address the server binds to.
+    :param allowed_hosts: Host header values clients may send. A bare name also
+        allows any port on that name, since the Host header carries the port.
+    :returns: the settings, or ``None`` to keep the SDK's loopback defaults.
+    :raises ValueError: if a non-loopback host is bound without allowed hosts, or
+        an entry is empty.
+    """
+    if not allowed_hosts:
+        if host in _LOCAL_HOSTS:
+            return None
+        raise ValueError(
+            f"refusing to bind {host} without an allowed host: every Host header would be accepted. "
+            "Pass allowed_hosts=... (or --allow-host on the command line) for each name or address "
+            "clients use."
+        )
+
+    # Loopback stays reachable even when the server also listens on another address.
+    hosts = ["127.0.0.1:*", "localhost:*", "[::1]:*"]
+    for raw in allowed_hosts:
+        entry = raw.strip()
+        if not entry:
+            raise ValueError("an allowed host cannot be empty")
+        hosts.append(entry)
+        if ":" not in entry:
+            # The Host header carries the port, so a bare name needs the wildcard.
+            hosts.append(f"{entry}:*")
+    return TransportSecuritySettings(
+        enable_dns_rebinding_protection=True,
+        allowed_hosts=list(dict.fromkeys(hosts)),
+    )
 
 
 def _excluded_path(tokens: list[str], exclude: frozenset[tuple[str, ...]]) -> tuple[str, ...] | None:

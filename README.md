@@ -49,6 +49,14 @@ For Claude Code:
 claude mcp add mycli -- mycli-mcp
 ```
 
+To serve it over Streamable HTTP instead — for a remote client or one shared
+across sessions — select the transport and the endpoint:
+
+```bash
+mycli-mcp --transport streamable-http --port 8000
+claude mcp add --transport http mycli http://127.0.0.1:8000/mcp
+```
+
 `cli` can also be a zero-argument callable that returns the root group or `None`.
 It is resolved once. If it raises, the server still starts with only the escape
 hatches. `module="mycli.main"` is the fallback launcher used when no installed
@@ -69,6 +77,13 @@ hatches. `module="mycli.main"` is the fallback launcher used when no installed
 | `run_description` | generic | Description override for `{app}_run`. |
 | `inherit_group_options` | `True` | Expose options declared on ancestor groups on every leaf tool below them. |
 | `tool_prefix` | `None` | Prefix for generated typed tool names: `None` keeps `{app}_`, `""` drops it, any other value is normalized (`-`/space to `_`, trailing `_` added). Must form a Python identifier. `{app}_help`/`{app}_run` keep their prefix regardless. |
+| `transport` | `"stdio"` | Default MCP transport for `run()`: `"stdio"` or `"streamable-http"`. |
+| `host` | `"127.0.0.1"` | Default Streamable HTTP bind address. |
+| `port` | `8000` | Default Streamable HTTP TCP port. |
+| `path` | `"/mcp"` | Default Streamable HTTP endpoint path; a leading `/` is added when missing. |
+| `stateless` | `False` | Default for Streamable HTTP: serve each request without a session. |
+| `json_response` | `False` | Default for Streamable HTTP: reply with a plain JSON body instead of an SSE stream. |
+| `allowed_hosts` | `None` | Host header values accepted when serving Streamable HTTP; required for a non-loopback `host`. A bare name also allows any port on it. |
 | `launcher` | `None` | Explicit argv prefix used to run the CLI. |
 | `env` | `None` | Extra child environment variables, merged over the defaults. |
 | `invoke` | `None` | Custom `(tokens) -> CompletedProcess[str]` runner; shared by typed tools and escape hatches. |
@@ -126,6 +141,24 @@ repeated. Positionals follow an end-of-options `--` in declaration order, so val
 that begin with `-` survive. Full-screen TUIs and endless streams cannot work over
 MCP. List them in `exclude`, because nothing here kills a subprocess and
 `{app}_run` refuses excluded paths before spawning.
+
+**Transports.** `run()` serves MCP over stdio by default. Pass `--transport
+streamable-http` (or set `transport=` on the constructor) to serve Streamable HTTP
+instead. `--host`, `--port`, `--path`, `--stateless`, `--json-response`, and
+`--allow-host` tune the endpoint, and the constructor's `host`, `port`, `path`,
+`stateless`, `json_response`, and `allowed_hosts` supply their defaults. Command-line
+flags override those defaults, with `--no-stateless` and `--no-json-response`
+turning a baked-in boolean off. `--groups` applies to both transports. The SDK's
+`sse` transport is not offered; Streamable HTTP supersedes it in the MCP spec.
+
+An HTTP bind is reachable from the network, so DNS-rebinding protection matters.
+The SDK applies its own loopback allowlist (`127.0.0.1:*`, `localhost:*`,
+`[::1]:*`) only when the bind address is loopback; binding anywhere else requires
+`--allow-host` (repeatable), and the server refuses to start without it rather than
+accepting every `Host` header. A bare name such as `example.com` allows any port on
+that name, since the `Host` header carries the port. Origins are not allowlisted: a
+request that carries an `Origin` header (a browser) is rejected, while non-browser
+clients normally send none.
 
 ## License
 

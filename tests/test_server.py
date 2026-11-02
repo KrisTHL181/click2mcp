@@ -11,7 +11,7 @@ import click
 import pytest
 from mcp.server.mcpserver.exceptions import ToolError
 
-from click2mcp.server import ClickMCP, _excluded_path, _group_prefixes
+from click2mcp.server import ClickMCP, _excluded_path, _group_prefixes, _transport_security
 
 
 class Recorder:
@@ -43,13 +43,16 @@ class FakeServer:
 
     def __init__(self) -> None:
         self.transports: list[str] = []
+        self.options: list[dict[str, object]] = []
 
-    def run(self, transport: str = "stdio") -> None:
-        """Record the transport.
+    def run(self, transport: str = "stdio", **kwargs: object) -> None:
+        """Record the transport and its options.
 
         :param transport: the transport name.
+        :param kwargs: transport-specific options.
         """
         self.transports.append(transport)
+        self.options.append(kwargs)
 
 
 def _tools(server) -> dict[str, object]:
@@ -213,6 +216,151 @@ def test_run_parses_groups(cli: click.Group) -> None:
     bridge.server = default
     bridge.run([])
     assert default.transports == ["stdio"]
+
+
+def test_run_streamable_http_passes_options(cli: click.Group) -> None:
+    """Every HTTP option reaches ``MCPServer.run`` with its transport spelling."""
+    bridge = ClickMCP(app="mycli", cli=cli, invoke=Recorder())
+    server = FakeServer()
+    bridge.server = server
+
+    bridge.run(
+        [
+            "--transport",
+            "streamable-http",
+            "--host",
+            "0.0.0.0",
+            "--port",
+            "9000",
+            "--path",
+            "rpc",
+            "--stateless",
+            "--json-response",
+            "--allow-host",
+            "example.com",
+            "--allow-host",
+            "10.0.0.5:9000",
+        ]
+    )
+
+    assert server.transports == ["streamable-http"]
+    options = server.options[0]
+    assert options["host"] == "0.0.0.0"
+    assert options["port"] == 9000
+    assert options["streamable_http_path"] == "/rpc"
+    assert options["stateless_http"] is True
+    assert options["json_response"] is True
+    security = options["transport_security"]
+    assert security.enable_dns_rebinding_protection is True
+    assert security.allowed_hosts == [
+        "127.0.0.1:*",
+        "localhost:*",
+        "[::1]:*",
+        "example.com",
+        "example.com:*",
+        "10.0.0.5:9000",
+    ]
+
+
+def test_run_uses_constructor_transport_defaults(cli: click.Group) -> None:
+    """A console script can bake in HTTP settings; an empty argv keeps them."""
+    bridge = ClickMCP(
+        app="mycli",
+        cli=cli,
+        invoke=Recorder(),
+        transport="streamable-http",
+        host="127.0.0.1",
+        port=9123,
+        path="rpc",
+        stateless=True,
+        json_response=True,
+    )
+    server = FakeServer()
+    bridge.server = server
+
+    bridge.run([])
+
+    assert server.transports == ["streamable-http"]
+    options = server.options[0]
+    assert options["host"] == "127.0.0.1"
+    assert options["port"] == 9123
+    assert options["streamable_http_path"] == "/rpc"
+    assert options["stateless_http"] is True
+    assert options["json_response"] is True
+    # A loopback bind keeps the SDK's own allowlist.
+    assert options["transport_security"] is None
+
+
+def test_run_flags_override_constructor_transport_defaults(cli: click.Group) -> None:
+    """Command-line flags win, and ``--no-*`` turns a baked-in default off."""
+    bridge = ClickMCP(
+        app="mycli",
+        cli=cli,
+        invoke=Recorder(),
+        transport="streamable-http",
+        stateless=True,
+        json_response=True,
+    )
+    server = FakeServer()
+    bridge.server = server
+
+    bridge.run(["--no-stateless", "--no-json-response", "--port", "7777"])
+
+    options = server.options[0]
+    assert options["port"] == 7777
+    assert options["stateless_http"] is False
+    assert options["json_response"] is False
+
+    stdio = FakeServer()
+    bridge.server = stdio
+    bridge.run(["--transport", "stdio"])
+    assert stdio.transports == ["stdio"]
+    assert stdio.options == [{}]
+
+
+def test_non_loopback_bind_requires_allow_host(cli: click.Group, capsys) -> None:
+    """An open bind without an allowlist is refused before the server runs."""
+    bridge = ClickMCP(app="mycli", cli=cli, invoke=Recorder())
+    server = FakeServer()
+    bridge.server = server
+
+    with pytest.raises(SystemExit) as excinfo:
+        bridge.run(["--transport", "streamable-http", "--host", "0.0.0.0"])
+
+    assert excinfo.value.code == 2
+    assert "refusing to bind 0.0.0.0" in capsys.readouterr().err
+    assert server.transports == []
+
+
+def test_transport_security_settings() -> None:
+    """Loopback keeps SDK defaults; anything else needs an explicit allowlist."""
+    assert _transport_security("127.0.0.1", None) is None
+    assert _transport_security("localhost", None) is None
+    assert _transport_security("::1", None) is None
+
+    with pytest.raises(ValueError, match="refusing to bind 0.0.0.0"):
+        _transport_security("0.0.0.0", None)
+    with pytest.raises(ValueError, match="cannot be empty"):
+        _transport_security("0.0.0.0", ["  "])
+
+    settings = _transport_security("0.0.0.0", ["example.com", "example.com:7000", "localhost"])
+    assert settings is not None
+    assert settings.enable_dns_rebinding_protection is True
+    assert settings.allowed_hosts == [
+        "127.0.0.1:*",
+        "localhost:*",
+        "[::1]:*",
+        "example.com",
+        "example.com:*",
+        "example.com:7000",
+        "localhost",
+    ]
+
+
+def test_unknown_transport_is_rejected_at_construction(cli: click.Group) -> None:
+    """Only the transports this bridge serves are accepted."""
+    with pytest.raises(ValueError, match="transport must be one of"):
+        ClickMCP(app="mycli", cli=cli, invoke=Recorder(), transport="sse")
 
 
 def test_build_server_include_narrows_tools(cli: click.Group) -> None:
