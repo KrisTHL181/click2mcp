@@ -58,7 +58,7 @@ from mcp.server.mcpserver.exceptions import ToolError
 from mcp.server.mcpserver.tools import Tool
 from mcp.server.transport_security import TransportSecuritySettings
 
-from click2mcp._output import compact_json
+from click2mcp._output import Output, shape_output
 from click2mcp.generator import generate_tools, resolve_tool_prefix
 
 if TYPE_CHECKING:
@@ -358,12 +358,13 @@ class ClickMCP:
         """
         app = self.app
 
-        def run_fn(args: str) -> str:
+        def run_fn(args: str) -> Output:
             """Run a CLI command and return its output.
 
             :param args: the command line to run, without the leading app name.
                 Quote arguments that contain spaces.
-            :returns: the command's stdout.
+            :returns: the command's output, as the parsed object or array when the
+                output is a JSON document.
             :raises ToolError: if no command is given, if the command is one that can
                 never finish over MCP (a full-screen terminal UI or an endless
                 stream), or if it exits non-zero.
@@ -391,9 +392,9 @@ class ClickMCP:
             # Successful commands often warn on stderr; only surface it when stdout is
             # empty, so that JSON output stays clean and parseable.
             if not proc.stdout.strip() and proc.stderr.strip():
-                return compact_json(proc.stderr.strip())
+                return shape_output(proc.stderr.strip())
 
-            return compact_json(proc.stdout)
+            return shape_output(proc.stdout)
 
         run_fn.__name__ = f"{app}_run"
         return Tool.from_function(run_fn, name=f"{app}_run", description=self.run_description)

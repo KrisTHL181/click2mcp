@@ -36,7 +36,7 @@ import click
 from mcp.server.mcpserver.exceptions import ToolError
 from mcp.server.mcpserver.tools import Tool
 
-from click2mcp._output import compact_json
+from click2mcp._output import Output, shape_output
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterator
@@ -559,7 +559,7 @@ def _build_tool(
     return tool
 
 
-def _build_function(spec: ToolSpec, runner: Callable[..., str]) -> Callable[..., str]:
+def _build_function(spec: ToolSpec, runner: Callable[..., Output]) -> Callable[..., Output]:
     """Build the function whose signature becomes the tool's JSON Schema.
 
     Required parameters come first: Python does not allow a defaulted parameter
@@ -585,13 +585,15 @@ def _build_function(spec: ToolSpec, runner: Callable[..., str]) -> Callable[...,
         for param in ordered
     ]
 
-    def body(**values: Any) -> str:
+    def body(**values: Any) -> Output:
         return runner(**values)
 
     body.__name__ = spec.name
     body.__doc__ = spec.description
-    body.__signature__ = inspect.Signature(parameters, return_annotation=str)
-    body.__annotations__ = {param.kwarg: param.annotation for param in ordered} | {"return": str}
+    # The union is what lets the MCP SDK publish a structured output and pass a
+    # parsed JSON document through as data instead of as an escaped string.
+    body.__signature__ = inspect.Signature(parameters, return_annotation=Output)
+    body.__annotations__ = {param.kwarg: param.annotation for param in ordered} | {"return": Output}
     return body
 
 
@@ -599,7 +601,7 @@ def _make_runner(
     spec: ToolSpec,
     invoke: Callable[[list[str]], subprocess.CompletedProcess[str]],
     app: str,
-) -> Callable[..., str]:
+) -> Callable[..., Output]:
     """Bind a spec to the subprocess plumbing, producing the tool's body.
 
     :param spec: the command to expose.
@@ -609,7 +611,7 @@ def _make_runner(
         command's output.
     """
 
-    def run(**values: Any) -> str:
+    def run(**values: Any) -> Output:
         argv = _build_argv(spec, values)
         command = f"{app} " + " ".join(argv)
         proc = invoke(argv)
@@ -618,8 +620,8 @@ def _make_runner(
         # A successful command often warns on stderr; only surface it when stdout is
         # empty, so JSON output stays parseable.
         if not proc.stdout.strip() and proc.stderr.strip():
-            return compact_json(proc.stderr.strip())
-        return compact_json(proc.stdout)
+            return shape_output(proc.stderr.strip())
+        return shape_output(proc.stdout)
 
     return run
 

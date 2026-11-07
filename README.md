@@ -127,11 +127,13 @@ MCP, even when Click does not mark the option required. A leaf whose parameters
 cannot be turned into a signature, or whose tool name collides with another
 command's, is logged and skipped. The rest of the server still starts.
 
-**JSON output.** Output that is a single JSON document is returned compact — one
-line, no indentation or separator padding — because an agent pays for every
-indentation token. This is best effort and applies to both the typed tools and
-`{app}_run`: help text, logs, JSON Lines, and anything else that is not one complete
-JSON document passes through exactly as the CLI wrote it, and key order is preserved.
+**JSON output.** Output that is a single JSON object or array is returned as data:
+the tool result carries a real JSON value in its structured content, so a client
+does not receive the document as an escaped JSON string. A bare JSON scalar is
+returned compact when re-serialization shortens it. This applies to both the typed
+tools and `{app}_run`. Help text, logs, JSON Lines, and anything else that is not
+one complete JSON document passes through exactly as the CLI wrote it, and key
+order is preserved.
 
 **Runtime and exclusions.** A call returns when the child exits. There is no
 server-side timeout, and the child's stdin is `/dev/null`, so it cannot read the

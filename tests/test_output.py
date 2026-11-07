@@ -1,4 +1,4 @@
-"""Tests for compact JSON output shaping."""
+"""Tests for JSON output shaping."""
 
 from __future__ import annotations
 
@@ -7,7 +7,7 @@ import subprocess
 import click
 import pytest
 
-from click2mcp._output import compact_json
+from click2mcp._output import compact_json, shape_output
 from click2mcp.generator import generate_tools
 from click2mcp.server import ClickMCP
 
@@ -68,6 +68,29 @@ def test_already_compact_json_is_untouched() -> None:
     assert compact_json("1e5") == "1e5"
 
 
+def test_object_is_returned_as_data() -> None:
+    """A JSON object comes back parsed, so the client gets a real object."""
+    assert shape_output('{\n  "answer": 42\n}\n') == {"answer": 42}
+
+
+def test_array_is_returned_as_data() -> None:
+    """A JSON array comes back parsed too."""
+    assert shape_output('[\n  {"id": 1},\n  {"id": 2}\n]\n') == [{"id": 1}, {"id": 2}]
+
+
+def test_scalar_json_stays_text() -> None:
+    """A bare scalar is not a document worth handing back as data."""
+    assert shape_output("1e5") == "1e5"
+    assert shape_output('"hello"') == '"hello"'
+
+
+def test_non_json_stays_text() -> None:
+    """Anything that is not one complete JSON document reaches the client as-is."""
+    assert shape_output("Usage: mycli [OPTIONS]\n") == "Usage: mycli [OPTIONS]\n"
+    assert shape_output("") == ""
+    assert shape_output("  \n") == "  \n"
+
+
 @pytest.fixture
 def cli() -> click.Group:
     """A CLI with one command.
@@ -86,26 +109,36 @@ def cli() -> click.Group:
     return cli
 
 
-def test_generated_tools_compact_json(cli: click.Group) -> None:
-    """A typed tool returns its CLI's pretty JSON on one line."""
+def test_generated_tools_return_json_data(cli: click.Group) -> None:
+    """A typed tool hands its CLI's JSON object back as an object."""
     recorder = Recorder(stdout='{\n  "answer": 42\n}\n')
     tool = generate_tools(cli=cli, invoke=recorder, app="mycli")[0]
 
-    assert tool.fn() == '{"answer":42}'
+    assert tool.fn() == {"answer": 42}
 
 
-def test_run_escape_hatch_compacts_json(cli: click.Group) -> None:
-    """``{app}_run`` compacts JSON output the same way as the typed tools."""
+def test_structured_output_carries_the_object(cli: click.Group) -> None:
+    """The wire result holds the object itself, not a JSON-encoded string."""
+    recorder = Recorder(stdout='{\n  "answer": 42\n}\n')
+    tool = generate_tools(cli=cli, invoke=recorder, app="mycli")[0]
+
+    result = tool.fn_metadata.convert_result(tool.fn())
+
+    assert result.structured_content == {"result": {"answer": 42}}
+
+
+def test_run_escape_hatch_returns_json_data(cli: click.Group) -> None:
+    """``{app}_run`` hands the object back the same way as the typed tools."""
     recorder = Recorder(stdout='{\n  "answer": 42\n}\n')
     bridge = ClickMCP(app="mycli", cli=cli, invoke=recorder)
     run_tool = next(tool for tool in bridge.server._tool_manager.list_tools() if tool.name == "mycli_run")
 
-    assert run_tool.fn(args="show") == '{"answer":42}'
+    assert run_tool.fn(args="show") == {"answer": 42}
 
 
-def test_stderr_fallback_is_compacted_too(cli: click.Group) -> None:
-    """When stdout is empty, a JSON warning on stderr is compacted as well."""
+def test_stderr_fallback_is_data_too(cli: click.Group) -> None:
+    """When stdout is empty, a JSON warning on stderr is returned as an object."""
     recorder = Recorder(stdout="", stderr='{\n  "warning": "low disk"\n}\n')
     tool = generate_tools(cli=cli, invoke=recorder, app="mycli")[0]
 
-    assert tool.fn() == '{"warning":"low disk"}'
+    assert tool.fn() == {"warning": "low disk"}
